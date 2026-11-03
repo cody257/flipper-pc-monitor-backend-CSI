@@ -4,9 +4,14 @@ use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::error::Error;
 
+mod commands;
 mod flipper_manager;
 mod helpers;
+mod host_info;
+mod net_info;
 mod system_info;
+mod telemetry;
+mod web;
 
 async fn data_sender(flipper: Peripheral) {
     let id = flipper.id();
@@ -22,25 +27,58 @@ async fn data_sender(flipper: Peripheral) {
     };
     println!("[{}] Sending data...", id.to_string());
 
-    // Reuse system variable in loop (small performance and RAM boost)
-    let mut system_info = sysinfo::System::new_all();
+    // Everything is sampled once per second by telemetry::sampler; this task
+    // only forwards the latest snapshot. Sampling used to live here, which
+    // meant it stopped whenever no Flipper was connected.
     loop {
-        let systeminfo = system_info::SystemInfo::get_system_info(&mut system_info).await;
-        let systeminfo_bytes = bincode::serialize(&systeminfo).unwrap();
-        // println!("Writing {:?} to Flipper", systeminfo_bytes);
+        if let Some(snapshot) = telemetry::latest() {
+            if let Ok(bytes) = bincode::serialize(&snapshot.system) {
+                if let Err(e) = flipper
+                    .write(
+                        cmd_char,
+                        &bytes,
+                        btleplug::api::WriteType::WithoutResponse,
+                    )
+                    .await
+                {
+                    println!("[{}] Failed to write: {}", id.to_string(), e);
+                }
+            }
 
-        if let Err(e) = flipper
-            .write(
-                cmd_char,
-                &systeminfo_bytes,
-                btleplug::api::WriteType::WithoutResponse,
-            )
-            .await
-        {
-            println!("[{}] Failed to write: {}", id.to_string(), e);
-        };
+            // Second frame: the network page. Sent as its own message so an
+            // app that does not know about it simply ignores it. Small gap
+            // keeps the two notifications from arriving as one callback.
+            if let Ok(bytes) = bincode::serialize(&snapshot.net) {
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                if let Err(e) = flipper
+                    .write(
+                        cmd_char,
+                        &bytes,
+                        btleplug::api::WriteType::WithoutResponse,
+                    )
+                    .await
+                {
+                    println!("[{}] Failed to write net frame: {}", id.to_string(), e);
+                }
+            }
 
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            // Third frame: SSID, which does not fit in the 11-byte net frame.
+            if let Ok(bytes) = bincode::serialize(&snapshot.ssid) {
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                if let Err(e) = flipper
+                    .write(
+                        cmd_char,
+                        &bytes,
+                        btleplug::api::WriteType::WithoutResponse,
+                    )
+                    .await
+                {
+                    println!("[{}] Failed to write ssid frame: {}", id.to_string(), e);
+                }
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(880)).await;
     }
 }
 
@@ -54,12 +92,47 @@ async fn reconnect_thread(central: Adapter, id: PeripheralId) {
     }
 }
 
+async fn command_receiver(flipper: Peripheral) {
+    let id = flipper.id();
+
+    let mut notifications = match flipper.notifications().await {
+        Ok(stream) => stream,
+        Err(e) => {
+            println!("[{}] Failed to read notifications: {}", id.to_string(), e);
+            return;
+        }
+    };
+
+    println!("[{}] Listening for commands", id.to_string());
+
+    while let Some(notification) = notifications.next().await {
+        commands::handle(&notification.value);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
     // std::env::set_var("RUST_BACKTRACE", "full");
 
     let manager = Manager::new().await?;
+
+    // Sample Wi-Fi / public IP on their own schedule, independent of sending.
+    tokio::spawn(net_info::refresh_loop());
+
+    // One sampler shared by the BLE sender and the web dashboard.
+    tokio::spawn(telemetry::sampler());
+
+    let port = std::env::var("PCM_WEB_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8099);
+    let web_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    tokio::spawn(async move {
+        if let Err(e) = web::serve(web_addr).await {
+            println!("Dashboard unavailable on {}: {}", web_addr, e);
+        }
+    });
 
     let central = flipper_manager::get_central(&manager).await;
     println!("Found {:?} adapter", central.adapter_info().await.unwrap());
@@ -90,6 +163,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if let Some(flp) = flipper_manager::get_flipper(&central, &id).await {
                     flp.discover_services().await?;
                     println!("[{}] Connected to Flipper", &id.to_string());
+
+                    // Reverse channel: subscribe to the Flipper's TX so button
+                    // presses arrive here.
+                    let tx = flp
+                        .characteristics()
+                        .iter()
+                        .find(|c| c.uuid == flipper_manager::FLIPPER_TX_CHARACTERISTIC_UUID)
+                        .cloned();
+
+                    match tx {
+                        Some(tx) => match flp.subscribe(&tx).await {
+                            Ok(()) => {
+                                tokio::spawn(command_receiver(flp.clone()));
+                            }
+                            Err(e) => {
+                                println!("[{}] Failed to subscribe to TX: {}", id.to_string(), e)
+                            }
+                        },
+                        None => println!("[{}] TX characteristic not found", id.to_string()),
+                    }
 
                     data_workers.insert(id.clone(), tokio::spawn(data_sender(flp)));
                 };

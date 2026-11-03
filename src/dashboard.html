@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PC Monitor</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --line: #262b36;
+    --ink: #e8ecf3;
+    --muted: #7d8798;
+    --cpu: #ff8a3d;
+    --ram: #4cc2ff;
+    --gpu: #a78bfa;
+    --vram: #34d399;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 28px 20px 48px;
+  }
+
+  .wrap { max-width: 880px; margin: 0 auto; }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+
+  h1 {
+    font-size: 20px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+
+  .pill {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+
+  .pill.live { color: var(--ok); border-color: #1f4d3a; background: #10231b; }
+  .pill.waiting { color: var(--warn); border-color: #4d3f1f; background: #241f10; }
+  .pill.offline { color: var(--bad); border-color: #4d2626; background: #241414; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px 16px 10px;
+  }
+
+  .head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .label {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .value {
+    margin-left: auto;
+    font-size: 22px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  .value.small { font-size: 16px; }
+
+  canvas { display: block; width: 100%; height: 64px; }
+
+  .net {
+    grid-column: 1 / -1;
+    padding-bottom: 16px;
+  }
+
+  .row3 {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .card.wide { grid-column: 1 / -1; }
+
+  .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+
+  .disks { display: grid; gap: 10px; margin-top: 8px; }
+
+  .disk {
+    display: grid;
+    grid-template-columns: 48px 1fr auto;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .dname {
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dbar {
+    height: 8px;
+    background: #0c0e13;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .dbar i {
+    display: block;
+    height: 100%;
+    background: var(--cpu);
+    border-radius: 999px;
+  }
+
+  .dtext {
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .net-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 4px;
+  }
+
+  .net-grid div { min-width: 0; }
+
+  .net-grid dt {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    margin-bottom: 3px;
+  }
+
+  .net-grid dd {
+    margin: 0;
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #cpu-value { color: var(--cpu); }
+  #ram-value { color: var(--ram); }
+  #gpu-value { color: var(--gpu); }
+  #vram-value { color: var(--vram); }
+
+  footer {
+    margin-top: 18px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  @media (max-width: 620px) {
+    .grid { grid-template-columns: 1fr; }
+    .row3 { grid-template-columns: 1fr; }
+    .net-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>PC Monitor</h1>
+    <span class="pill" id="status" aria-live="polite">connecting…</span>
+  </header>
+
+  <section class="grid">
+    <article class="card">
+      <div class="head"><span class="label">CPU</span><span class="value" id="cpu">--</span></div>
+      <canvas id="cpu-chart" width="800" height="160"></canvas>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="label">RAM</span><span class="value" id="ram">--</span></div>
+      <canvas id="ram-chart" width="800" height="160"></canvas>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="label">GPU</span><span class="value" id="gpu">--</span></div>
+      <canvas id="gpu-chart" width="800" height="160"></canvas>
+    </article>
+
+    <article class="card">
+      <div class="head"><span class="label">VRAM</span><span class="value" id="vram">--</span></div>
+      <canvas id="vram-chart" width="800" height="160"></canvas>
+    </article>
+
+    <div class="row3">
+      <article class="card">
+        <div class="head"><span class="label">Battery</span><span class="value" id="battery">--</span></div>
+        <div class="sub" id="battery-sub">--</div>
+      </article>
+
+      <article class="card">
+        <div class="head"><span class="label">Uptime</span><span class="value" id="uptime">--</span></div>
+        <div class="sub" id="uptime-sub">&nbsp;</div>
+      </article>
+
+      <article class="card">
+        <div class="head"><span class="label">Throughput</span><span class="value small" id="throughput">--</span></div>
+        <div class="sub" id="throughput-sub">&nbsp;</div>
+      </article>
+    </div>
+
+    <article class="card wide">
+      <div class="head"><span class="label">Disks</span></div>
+      <div class="disks" id="disks"></div>
+    </article>
+
+    <article class="card net">
+      <div class="head"><span class="label">Network</span></div>
+      <dl class="net-grid">
+        <div><dt>Wi-Fi</dt><dd id="net-signal">--</dd></div>
+        <div><dt>Link</dt><dd id="net-link">--</dd></div>
+        <div><dt>Band</dt><dd id="net-band">--</dd></div>
+        <div><dt>SSID</dt><dd id="net-ssid">--</dd></div>
+        <div><dt>IP</dt><dd id="net-ip">--</dd></div>
+        <div><dt>VPN</dt><dd id="net-vpn">--</dd></div>
+      </dl>
+    </article>
+  </section>
+
+  <footer id="stamp">&nbsp;</footer>
+</div>
+
+<script>
+(() => {
+  const MAX = 120;
+  const COLORS = { cpu: '#ff8a3d', ram: '#4cc2ff', gpu: '#a78bfa', vram: '#34d399' };
+  const series = { cpu: [], ram: [], gpu: [], vram: [] };
+  const charts = {};
+
+  for (const key of Object.keys(series)) {
+    charts[key] = document.getElementById(`${key}-chart`);
+  }
+
+  const el = (id) => document.getElementById(id);
+
+  function push(key, value) {
+    const arr = series[key];
+    arr.push(Number.isFinite(value) ? value : 0);
+    if (arr.length > MAX) arr.shift();
+  }
+
+  function draw(key) {
+    const canvas = charts[key];
+    const data = series[key];
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.055)';
+    ctx.lineWidth = 1;
+    for (const pct of [0.25, 0.5, 0.75]) {
+      const y = Math.round(h - pct * h) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+
+    if (data.length < 2) return;
+
+    const step = w / (MAX - 1);
+    ctx.beginPath();
+    data.forEach((v, i) => {
+      const x = i * step;
+      const y = h - (Math.max(0, Math.min(100, v)) / 100) * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = COLORS[key];
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    ctx.lineTo((data.length - 1) * step, h);
+    ctx.lineTo(0, h);
+    ctx.closePath();
+    ctx.fillStyle = COLORS[key] + '22';
+    ctx.fill();
+  }
+
+  function setStatus(text, kind) {
+    const pill = el('status');
+    pill.textContent = text;
+    pill.className = 'pill ' + kind;
+  }
+
+  function bandLabel(band, channel) {
+    const names = { 1: '2.4 GHz', 2: '5 GHz', 3: '6 GHz' };
+    const name = names[band] || '';
+    const ch = channel ? `ch ${channel}` : '';
+    return [name, ch].filter(Boolean).join(' · ') || 'n/a';
+  }
+
+  function fmtUptime(secs) {
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    if (d) return `${d}d ${h}h`;
+    if (h) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
+
+  function fmtRate(bps) {
+    if (bps < 1024) return `${Math.round(bps)} B/s`;
+    if (bps < 1048576) return `${(bps / 1024).toFixed(1)} KB/s`;
+    return `${(bps / 1048576).toFixed(1)} MB/s`;
+  }
+
+  function fmtMinutes(min) {
+    if (!min) return '';
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return h ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  function updateHost(data) {
+    const b = data.battery;
+    if (b) {
+      el('battery').textContent = `${b.pct}%`;
+      const left = fmtMinutes(b.minutes_left);
+      el('battery-sub').textContent = b.charging
+        ? (left ? `charging · ${left} to full` : 'charging')
+        : (left ? `${left} left` : 'on battery');
+    } else {
+      el('battery').textContent = 'n/a';
+      el('battery-sub').textContent = 'no battery detected';
+    }
+
+    el('uptime').textContent = fmtUptime(data.uptime || 0);
+    el('uptime-sub').textContent = 'since boot';
+
+    const t = data.throughput || { rx_bps: 0, tx_bps: 0 };
+    el('throughput').textContent = '↓ ' + fmtRate(t.rx_bps);
+    el('throughput-sub').textContent = '↑ ' + fmtRate(t.tx_bps);
+
+    const disks = data.disks || [];
+    el('disks').innerHTML = disks.length
+      ? disks.map((d) => `
+        <div class="disk">
+          <span class="dname">${d.name}</span>
+          <div class="dbar"><i style="width:${Math.min(100, d.pct)}%"></i></div>
+          <span class="dtext">${d.used} / ${d.total} GB</span>
+        </div>`).join('')
+      : '<div class="sub">no fixed disks detected</div>';
+  }
+
+  async function tick() {
+    let data;
+    try {
+      const res = await fetch('/api', { cache: 'no-store' });
+      data = await res.json();
+    } catch (err) {
+      setStatus('backend offline', 'offline');
+      return;
+    }
+
+    if (!data.ready) {
+      setStatus('waiting for sample', 'waiting');
+      return;
+    }
+
+    setStatus('live', 'live');
+
+    el('cpu').textContent = `${data.cpu}%`;
+    push('cpu', data.cpu);
+    draw('cpu');
+
+    el('ram').textContent = `${data.ram.used} / ${data.ram.total} ${data.ram.unit}`;
+    el('ram').classList.add('small');
+    push('ram', data.ram.pct);
+    draw('ram');
+
+    if (data.gpu === null) {
+      el('gpu').textContent = 'n/a';
+      push('gpu', 0);
+    } else {
+      el('gpu').textContent = data.gpu + '%';
+      push('gpu', data.gpu);
+    }
+    draw('gpu');
+
+    if (data.vram) {
+      el('vram').textContent = `${data.vram.used} / ${data.vram.total} ${data.vram.unit}`;
+      el('vram').classList.add('small');
+      push('vram', data.vram.pct);
+    } else {
+      el('vram').textContent = 'n/a';
+      push('vram', 0);
+    }
+    draw('vram');
+
+    el('net-signal').textContent = data.net.wifi ? `${data.net.signal}%` : 'n/a';
+    el('net-link').textContent = data.net.wifi ? `${data.net.mbps} Mbps` : 'n/a';
+    el('net-band').textContent = data.net.wifi ? bandLabel(data.net.band, data.net.channel) : 'n/a';
+    el('net-ssid').textContent = data.net.ssid || 'n/a';
+    el('net-ip').textContent = data.net.ip;
+    el('net-vpn').textContent = data.net.vpn ? 'on' : 'off';
+
+    updateHost(data);
+
+    el('stamp').textContent = 'Last sample ' + new Date(data.ts * 1000).toLocaleTimeString();
+  }
+
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>
